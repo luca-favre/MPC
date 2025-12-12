@@ -33,7 +33,7 @@ class MPCControl_xvel(MPCControl_base):
         # Cost matrices - tune these for performance
         Q = np.diag([1.0, 50.0, 10.0])   # penalize β and v_x strongly
         R = np.diag([0.1])               # small penalty on δ₂
-        # IMPORTANT: dlqr returns u = -K_lqr x
+       
         K_lqr, P, _ = dlqr(self.A, self.B, Q, R)
         K = -K_lqr  # so we can write Δu = K Δx
         self.K = K
