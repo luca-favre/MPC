@@ -14,7 +14,7 @@ class MPCControl_roll(MPCControl_base):
         MPC for roll dynamics.
         States: [ω_z, γ]
         Input: P_diff
-        Constraints:  |P_diff| ≤ 40
+        Constraints:  |P_diff| ≤ 20
         """
         N = self.N
         nx = self.nx
@@ -30,37 +30,44 @@ class MPCControl_roll(MPCControl_base):
         # Cost matrices - tune these for performance
         Q = np.diag([1.0, 50.0])   # stronger weight on γ
         R = np.diag([0.1])         # penalty on P_diff
-        K, P, _ = dlqr(self.A, self.B, Q, R)
+        # IMPORTANT: dlqr returns u = -K_lqr x
+        K_lqr, P, _ = dlqr(self.A, self.B, Q, R)
+        K = -K_lqr  # so we can write Δu = K Δx
+        self.K = K
         self.Q, self.R, self.P = Q, R, P
-    
-        # Terminal set
 
-    
-        Pdiff_max = 40.0
+        # -------------------------------
+        # Terminal invariant set Xf (LQR-based)
+        # -------------------------------
+        Pdiff_max = 20.0
         Pdiff_eq = float(self.us[0])
 
-        # Input constraint under LQR:
-        # u_true = Pdiff_eq + K Δx
-        # |u_true| <= Pdiff_max
-        #
-        #  Pdiff_eq + KΔx <= Pdiff_max  -> KΔx <= Pdiff_max - Pdiff_eq
-        # -(Pdiff_eq + KΔx) <= Pdiff_max -> -KΔx <= Pdiff_max + Pdiff_eq
-        Hu = np.vstack([K, -K])  # shape (2, 2)
-        hu = np.array([
-            Pdiff_max - Pdiff_eq,
-            Pdiff_max + Pdiff_eq
-        ]).flatten()
+        # No explicit state constraints on (ωz, γ) in the project.
+        # We still need a bounded X to build a Polyhedron for the invariant-set iteration.
+        wz_bound = 10.0
+        gamma_bound = np.pi
+        X = Polyhedron.from_Hrep(
+            np.array([[1.0, 0.0], [-1.0, 0.0], [0.0, 1.0], [0.0, -1.0]]),
+            np.array([wz_bound, wz_bound, gamma_bound, gamma_bound])
+        )
 
-    
-        hu = np.asarray(hu, dtype=float).flatten()
-        Hu = np.asarray(Hu, dtype=float)
-        self.terminal_set = Polyhedron.from_Hrep(Hu, hu)
+        # U: bounds on ΔPdiff since u_true = Pdiff_eq + Δu
+        U = Polyhedron.from_Hrep(
+            np.array([[1.0], [-1.0]]),
+            np.array([Pdiff_max - Pdiff_eq, Pdiff_max + Pdiff_eq])
+        )
+
+        KU = Polyhedron.from_Hrep(U.A @ K, U.b)
+        X_and_KU = X.intersect(KU)
+
+        Acl = self.A + self.B @ K
+        self.Xf = self.max_invariant_set(Acl, X_and_KU)
         constraints = []
         
         # Initial condition
         constraints += [self.x_var[:, 0] == self.x0_par]
         
-        Pdiff_max = 40.0
+        Pdiff_max = 20.0
         for k in range(N):
             u_true = self.us[0] + self.u_var[0, k]  # scalar + scalar
             constraints += [
@@ -84,6 +91,9 @@ class MPCControl_roll(MPCControl_base):
         
         dx_N = self.x_var[:, N] - self.x_ref_par
         cost += cp.quad_form(dx_N, P)
+
+        # Terminal constraint x_N ∈ Xf (recursive feasibility)
+        constraints += [self.Xf.A @ self.x_var[:, N] <= self.Xf.b]
         
         self.ocp = cp.Problem(cp.Minimize(cost), constraints)
     

@@ -30,47 +30,43 @@ class MPCControl_yvel(MPCControl_base):
         # Cost matrices - tune these for performance
         Q = np.diag([1.0, 50.0, 10.0])   # penalize α and v_y strongly
         R = np.diag([0.1])               # small penalty on δ₁
-        K, P, _ = dlqr(self.A, self.B, Q, R)
+        # IMPORTANT: dlqr returns u = -K_lqr x
+        K_lqr, P, _ = dlqr(self.A, self.B, Q, R)
+        K = -K_lqr  # so we can write Δu = K Δx
+        self.K = K
         self.Q, self.R, self.P = Q, R, P
         
         
        
-        # Terminal set 
-    
-
+        # -------------------------------
+        # Terminal invariant set Xf (LQR-based)
+        # -------------------------------
         alpha_max = np.deg2rad(10.0)
         delta_max = np.deg2rad(15.0)
 
-        alpha_eq = float(self.xs[1])   # equilibrium α (usually 0)
-        delta_eq = float(self.us[0])   # equilibrium δ₁ (usually 0)
+        alpha_eq = float(self.xs[1])
+        delta_eq = float(self.us[0])
 
-        # Terminal constraints are in Δx-space: H * Δx <= h
-        # Δx = [Δω_x, Δα, Δv_y]
-        #
-        # State constraint: |α_eq + Δα| <= alpha_max
-        Hx = np.array([
-            [0.0,  1.0, 0.0],
-            [0.0, -1.0, 0.0],
-        ])
-        hx = np.array([
-            alpha_max - alpha_eq,
-            alpha_max + alpha_eq,
-        ])
+        # X: state constraint in deviation coords (only α constrained)
+        Hx = np.array([[0.0,  1.0, 0.0],
+                       [0.0, -1.0, 0.0]])
+        hx = np.array([alpha_max - alpha_eq,
+                       alpha_max + alpha_eq])
+        X = Polyhedron.from_Hrep(Hx, hx)
 
-        # Input constraint under LQR: Δu = K Δx, true u = delta_eq + Δu
-        # |delta_eq + KΔx| <= delta_max
-        Hu = np.vstack([K, -K])
-        hu = np.array([
-            delta_max - delta_eq,
-            delta_max + delta_eq,
-        ]).flatten()
+        # U: input constraint in deviation coords (Δδ1 bounds)
+        Hu_u = np.array([[1.0], [-1.0]])
+        hu_u = np.array([delta_max - delta_eq,
+                         delta_max + delta_eq])
+        U = Polyhedron.from_Hrep(Hu_u, hu_u)
 
-        H = np.vstack([Hx, Hu])
-        h = np.hstack([hx, hu])
+        # KU: enforce Δu = K Δx respects U
+        KU = Polyhedron.from_Hrep(U.A @ K, U.b)
+        X_and_KU = X.intersect(KU)
 
-        h = np.asarray(h, dtype=float).flatten()
-        H = np.asarray(H, dtype=float)
-        self.terminal_set = Polyhedron.from_Hrep(H, h)
+        # Max invariant subset for x^+ = (A + B K) x
+        Acl = self.A + self.B @ K
+        self.Xf = self.max_invariant_set(Acl, X_and_KU)
         
         
         
@@ -113,6 +109,9 @@ class MPCControl_yvel(MPCControl_base):
         
         dx_N = self.x_var[:, N] - self.x_ref_par
         cost += cp.quad_form(dx_N, P)
+
+        # Terminal constraint x_N ∈ Xf (recursive feasibility)
+        constraints += [self.Xf.A @ self.x_var[:, N] <= self.Xf.b]
         
         self.ocp = cp.Problem(cp.Minimize(cost), constraints)
     

@@ -31,30 +31,35 @@ class MPCControl_zvel(MPCControl_base):
         # Cost matrices - tune these for performance
         Q = np.array([[10.0]])   # penalize v_z deviation
         R = np.array([[0.1]])    # penalize throttle deviation
-        K, P, _ = dlqr(self.A, self.B, Q, R)
-        self.Q, self.R, self.P = Q, R, 
+        # IMPORTANT: dlqr returns u = -K_lqr x
+        K_lqr, P, _ = dlqr(self.A, self.B, Q, R)
+        K = -K_lqr  # so we can write Δu = K Δx
+        self.K = K
+        self.Q, self.R, self.P = Q, R, P
 
-        # Terminal set
-        
-        # Input constraint on TRUE P_avg: 40 <= P_avg <= 80
+        # -------------------------------
+        # Terminal invariant set Xf (LQR-based)
+        # -------------------------------
         P_min = 40.0
         P_max = 80.0
-        P_eq = float(self.us[0])  # equilibrium P_avg
+        P_eq = float(self.us[0])
 
-        # True input under LQR: u_true = P_eq + Δu = P_eq + K Δx
-        # Enforce:
-        #   P_eq + K Δx <= P_max  ->  K Δx <= P_max - P_eq
-        #   P_eq + K Δx >= P_min  -> -K Δx <= -(P_min - P_eq) = P_eq - P_min
-        H = np.vstack([K, -K])  # shape (2, 1)
-        h = np.array([
-            P_max - P_eq,
-            P_eq - P_min
-        ]).flatten()
+        # For 1D we still need some (non-active) state bounds to build a Polyhedron.
+        # Choose a wide bound so it doesn't bind; the invariant set will be shaped by U via K.
+        vz_bound = 30.0
+        X = Polyhedron.from_Hrep(np.array([[1.0], [-1.0]]), np.array([vz_bound, vz_bound]))
 
-        
-        h = np.asarray(h, dtype=float).flatten()
-        H = np.asarray(H, dtype=float)
-        self.terminal_set = Polyhedron.from_Hrep(H, h)
+        # U: bounds on ΔPavg since u_true = P_eq + Δu
+        U = Polyhedron.from_Hrep(
+            np.array([[1.0], [-1.0]]),
+            np.array([P_max - P_eq, P_eq - P_min])
+        )
+
+        KU = Polyhedron.from_Hrep(U.A @ K, U.b)
+        X_and_KU = X.intersect(KU)
+
+        Acl = self.A + self.B @ K
+        self.Xf = self.max_invariant_set(Acl, X_and_KU)
         constraints = []
         
         # Initial condition
@@ -86,6 +91,9 @@ class MPCControl_zvel(MPCControl_base):
         
         dx_N = self.x_var[:, N] - self.x_ref_par
         cost += cp.quad_form(dx_N, P)
+
+        # Terminal constraint x_N ∈ Xf (recursive feasibility)
+        constraints += [self.Xf.A @ self.x_var[:, N] <= self.Xf.b]
         
         self.ocp = cp.Problem(cp.Minimize(cost), constraints)
         

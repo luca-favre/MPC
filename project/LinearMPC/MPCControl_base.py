@@ -168,4 +168,32 @@ class MPCControl_base:
         return u0, x_traj, u_traj
 
 
+    # ------------------------------------------------------------------
+    # Terminal set utilities (Deliverable 3.1 / 3.2)
+    # ------------------------------------------------------------------
+    @staticmethod
+    def max_invariant_set(A_cl: np.ndarray, X: Polyhedron, max_iter: int = 50) -> Polyhedron:
+        """Compute the maximal positively invariant set for x^+ = A_cl x, inside X.
+
+        Implements the standard fixed-point iteration:
+            O_{k+1} = O_k ∩ Pre(O_k),  Pre(O) = {x | A_cl x ∈ O}
+
+        Notes:
+        - X and the returned set are in the same coordinates (here: deviation coordinates).
+        - Equality check relies on mpt4py Polyhedron __eq__.
+        """
+        O = Polyhedron.from_Hrep(X.A, X.b)
+        itr = 0
+        while itr < max_iter:
+            O_prev = O
+            F, f = O.A, O.b
+            O_pre = Polyhedron.from_Hrep(F @ A_cl, f)
+            O = O.intersect(O_pre)
+            if O == O_prev:
+                break
+            itr += 1
+        return O
+
+
+
 
