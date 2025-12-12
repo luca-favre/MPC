@@ -2,7 +2,7 @@ import numpy as np
 import cvxpy as cp
 from control import dlqr
 from .MPCControl_base import MPCControl_base
-
+from mpt4py import Polyhedron 
 class MPCControl_yvel(MPCControl_base):
     """MPC for y-velocity control (y-subsystem without position)."""
     # Reduced y-subsystem: [ω_x, α, v_y] (no position y)
@@ -30,8 +30,49 @@ class MPCControl_yvel(MPCControl_base):
         # Cost matrices - tune these for performance
         Q = np.diag([1.0, 50.0, 10.0])   # penalize α and v_y strongly
         R = np.diag([0.1])               # small penalty on δ₁
-        _, P, _ = dlqr(self.A, self.B, Q, R)
+        K, P, _ = dlqr(self.A, self.B, Q, R)
         self.Q, self.R, self.P = Q, R, P
+        
+        
+       
+        # Terminal set 
+    
+
+        alpha_max = np.deg2rad(10.0)
+        delta_max = np.deg2rad(15.0)
+
+        alpha_eq = float(self.xs[1])   # equilibrium α (usually 0)
+        delta_eq = float(self.us[0])   # equilibrium δ₁ (usually 0)
+
+        # Terminal constraints are in Δx-space: H * Δx <= h
+        # Δx = [Δω_x, Δα, Δv_y]
+        #
+        # State constraint: |α_eq + Δα| <= alpha_max
+        Hx = np.array([
+            [0.0,  1.0, 0.0],
+            [0.0, -1.0, 0.0],
+        ])
+        hx = np.array([
+            alpha_max - alpha_eq,
+            alpha_max + alpha_eq,
+        ])
+
+        # Input constraint under LQR: Δu = K Δx, true u = delta_eq + Δu
+        # |delta_eq + KΔx| <= delta_max
+        Hu = np.vstack([K, -K])
+        hu = np.array([
+            delta_max - delta_eq,
+            delta_max + delta_eq,
+        ]).flatten()
+
+        H = np.vstack([Hx, Hu])
+        h = np.hstack([hx, hu])
+
+        h = np.asarray(h, dtype=float).flatten()
+        H = np.asarray(H, dtype=float)
+        self.terminal_set = Polyhedron.from_Hrep(H, h)
+        
+        
         
         constraints = []
         

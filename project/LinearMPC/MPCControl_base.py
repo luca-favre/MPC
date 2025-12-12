@@ -81,6 +81,7 @@ class MPCControl_base:
         self.R = R
         self.P = P
 
+       
         constraints = []
 
         # Initial condition
@@ -165,3 +166,6 @@ class MPCControl_base:
         u0 = u_traj[:, 0]
 
         return u0, x_traj, u_traj
+
+
+

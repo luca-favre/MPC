@@ -2,7 +2,7 @@ import numpy as np
 import cvxpy as cp
 from control import dlqr
 from .MPCControl_base import MPCControl_base
-
+from mpt4py import Polyhedron
 class MPCControl_roll(MPCControl_base):
     """MPC for roll control."""
     # Roll subsystem: [ω_z, γ]
@@ -14,7 +14,7 @@ class MPCControl_roll(MPCControl_base):
         MPC for roll dynamics.
         States: [ω_z, γ]
         Input: P_diff
-        Constraints: |γ| ≤ 10° (optional, linearization valid for any γ), |P_diff| ≤ 40
+        Constraints:  |P_diff| ≤ 40
         """
         N = self.N
         nx = self.nx
@@ -30,24 +30,36 @@ class MPCControl_roll(MPCControl_base):
         # Cost matrices - tune these for performance
         Q = np.diag([1.0, 50.0])   # stronger weight on γ
         R = np.diag([0.1])         # penalty on P_diff
-        _, P, _ = dlqr(self.A, self.B, Q, R)
+        K, P, _ = dlqr(self.A, self.B, Q, R)
         self.Q, self.R, self.P = Q, R, P
-        
+    
+        # Terminal set
+
+    
+        Pdiff_max = 40.0
+        Pdiff_eq = float(self.us[0])
+
+        # Input constraint under LQR:
+        # u_true = Pdiff_eq + K Δx
+        # |u_true| <= Pdiff_max
+        #
+        #  Pdiff_eq + KΔx <= Pdiff_max  -> KΔx <= Pdiff_max - Pdiff_eq
+        # -(Pdiff_eq + KΔx) <= Pdiff_max -> -KΔx <= Pdiff_max + Pdiff_eq
+        Hu = np.vstack([K, -K])  # shape (2, 2)
+        hu = np.array([
+            Pdiff_max - Pdiff_eq,
+            Pdiff_max + Pdiff_eq
+        ]).flatten()
+
+    
+        hu = np.asarray(hu, dtype=float).flatten()
+        Hu = np.asarray(Hu, dtype=float)
+        self.terminal_set = Polyhedron.from_Hrep(Hu, hu)
         constraints = []
         
         # Initial condition
         constraints += [self.x_var[:, 0] == self.x0_par]
         
-        # # Roll angle constraint |γ| ≤ 10° 
-        # gamma_max = np.deg2rad(10.0)
-        # for k in range(N + 1):
-        #     gamma_k = self.xs[1] + self.x_var[1, k]  # true γ = γ_s + Δγ
-        #     constraints += [
-        #         gamma_k <= gamma_max,
-        #         gamma_k >= -gamma_max,
-        #     ]
-        
-        # Input constraint on P_diff: |P_diff| ≤ 40
         Pdiff_max = 40.0
         for k in range(N):
             u_true = self.us[0] + self.u_var[0, k]  # scalar + scalar

@@ -2,7 +2,7 @@ import numpy as np
 import cvxpy as cp
 from control import dlqr
 from .MPCControl_base import MPCControl_base
-
+from mpt4py import Polyhedron 
 class MPCControl_zvel(MPCControl_base):
     """MPC for vertical velocity control (z-subsystem without position)."""
     x_ids: np.ndarray = np.array([8])  # v_z only (no position z)
@@ -31,9 +31,30 @@ class MPCControl_zvel(MPCControl_base):
         # Cost matrices - tune these for performance
         Q = np.array([[10.0]])   # penalize v_z deviation
         R = np.array([[0.1]])    # penalize throttle deviation
-        _, P, _ = dlqr(self.A, self.B, Q, R)
-        self.Q, self.R, self.P = Q, R, P
+        K, P, _ = dlqr(self.A, self.B, Q, R)
+        self.Q, self.R, self.P = Q, R, 
+
+        # Terminal set
         
+        # Input constraint on TRUE P_avg: 40 <= P_avg <= 80
+        P_min = 40.0
+        P_max = 80.0
+        P_eq = float(self.us[0])  # equilibrium P_avg
+
+        # True input under LQR: u_true = P_eq + Δu = P_eq + K Δx
+        # Enforce:
+        #   P_eq + K Δx <= P_max  ->  K Δx <= P_max - P_eq
+        #   P_eq + K Δx >= P_min  -> -K Δx <= -(P_min - P_eq) = P_eq - P_min
+        H = np.vstack([K, -K])  # shape (2, 1)
+        h = np.array([
+            P_max - P_eq,
+            P_eq - P_min
+        ]).flatten()
+
+        
+        h = np.asarray(h, dtype=float).flatten()
+        H = np.asarray(H, dtype=float)
+        self.terminal_set = Polyhedron.from_Hrep(H, h)
         constraints = []
         
         # Initial condition
